@@ -1,6 +1,6 @@
 # 基于Pytorch的LSTM/RNN中文文本分类
 数据集可在[此处](https://pan.baidu.com/s/1UQ3fMOHTG0ztuSd8PEaNZg)下载获得， 
-提取码：`i4o2`，解压后放置于项目目录下。文件格式：.txt文本文件
+提取码：i4o2，解压后放置于项目目录下。文件格式：.txt文本文件
 
 数据格式如下：
 ```
@@ -44,6 +44,6 @@ class2id = {
 ## 4.查看loss曲线与accuracy曲线
 可以看到，同样的参数设置下，RNN与LSTM的模型效果差距还是很大的。
 
-![loss曲线](image/loss.png)
+![loss曲线](images/loss.png)
 
-![accuracy曲线](image/accuracy.png)
+![accuracy曲线](images/accuracy.png)
