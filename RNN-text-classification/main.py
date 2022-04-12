@@ -21,7 +21,7 @@ from data_process import class2id, data_2_id_list, sort_by_lengths, pad_sentence
 # 参数设置
 batch_size = 64
 lr = 0.001
-n_layers = 2
+num_layers = 2
 epoch_num = 10
 emb_size = 300
 hidden_size = 128
@@ -77,7 +77,7 @@ def evaluate(rnn_model, mode_set):
             length_tensors_ = torch.LongTensor(length_lists_)
             target_tensors_ = torch.LongTensor(target_lists_)
             # forward
-            output_ = model(input_tensors_, length_tensors_)  # [Batch_size, n_class]
+            output_ = model(input_tensors_)  # [Batch_size, n_class]
             _, acc = accuracy(output_, target_tensors_)
             epoch_acc += acc
         epoch_acc /= math.ceil(len(mode_set[0])/batch_size)  # 求batch的个数（取上整数）
@@ -125,7 +125,7 @@ if __name__ == '__main__':
     model = MyRNN(vocab_size=vocab_size,
                   emb_size=emb_size,
                   hidden_size=hidden_size,
-                  n_layers=n_layers,
+                  num_layers=num_layers,
                   out_size=n_class)
     optimizer = optim.Adam(model.parameters(), lr=lr)
     print("成功初始化模型...")
