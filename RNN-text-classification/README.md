@@ -1,6 +1,6 @@
 # 基于Pytorch的LSTM/RNN中文文本分类
 数据集可在[此处](https://pan.baidu.com/s/1UQ3fMOHTG0ztuSd8PEaNZg)下载获得， 
-提取码：i4o2，解压后放置于项目目录下。文件格式：.txt文本文件
+提取码：`i4o2`，解压后放置于项目目录下。文件格式：.txt文本文件
 
 数据格式如下：
 ```
