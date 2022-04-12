@@ -1,5 +1,6 @@
 
-## 1、文本内容安全：基于Pytorch的LSTM/RNN中文文本分类
+## 1、文本内容安全
+RNN-test-classification：基于Pytorch的LSTM/RNN方法，对今日头条新闻数据集做中文文本分类，包括数据预处理、模型构建、模型训练等步骤。
 
 ## 2、多媒体内容安全
 
