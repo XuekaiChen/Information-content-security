@@ -16,7 +16,7 @@ import torch.nn.functional as F
 from torch.utils.tensorboard import SummaryWriter
 from model import MyRNN
 from data_process import class2id, data_2_id_list, sort_by_lengths, pad_sentence
-
+from sklearn.metrics import classification_report,accuracy_score, recall_score, f1_score, precision_score
 
 # 参数设置
 batch_size = 64
@@ -56,7 +56,6 @@ def regularize_data(mode_set):  # [sample_num*[[input_list],target]]
 
 
 # 计算predict与target准确率 tensor
-# TODO：计算每一类的准确率和召回
 def accuracy(predict, target):
     predict = predict.topk(1).indices.flatten()
     acc = predict.eq(target).sum().item() / len(predict)
@@ -64,26 +63,29 @@ def accuracy(predict, target):
 
 
 # 对test或valid计算准确率
-def evaluate(rnn_model, mode_set):
+def evaluate(rnn_model, mode_set, report=False):
     rnn_model.eval()
     epoch_acc = 0
+    y_test = []
+    y_pred = []
     with torch.no_grad():
         for idx in tqdm(range(0, len(mode_set[0]), batch_size)):
             # 依次按batch取数据，并list转tensor
-            input_lists_ = mode_set[0][idx: idx + batch_size]
-            length_lists_ = mode_set[1][idx: idx + batch_size]
             target_lists_ = mode_set[2][idx: idx + batch_size]
+            y_test += target_lists_
+            input_lists_ = mode_set[0][idx: idx + batch_size]
             input_tensors_ = torch.LongTensor(input_lists_)
-            length_tensors_ = torch.LongTensor(length_lists_)
-            target_tensors_ = torch.LongTensor(target_lists_)
-            # forward
             output_ = model(input_tensors_)  # [Batch_size, n_class]
-            _, acc = accuracy(output_, target_tensors_)
-            epoch_acc += acc
-        epoch_acc /= math.ceil(len(mode_set[0])/batch_size)  # 求batch的个数（取上整数）
-        epoch_acc *= 100
-    print("------------验证结果：accuracy = %.4f%%------------" % epoch_acc)
-    return epoch_acc
+            output_ = output_.topk(1).indices.flatten().tolist()
+            y_pred += output_
+
+    print('Accuracy  : %.4f%%' % (100 * accuracy_score(y_test, y_pred)))
+    print('Recall    : %.4f%%' % (100 * recall_score(y_test, y_pred, average='weighted')))
+    print('Precision : %.4f%%' % (100 * precision_score(y_test, y_pred, average='weighted')))
+    print('F1-score  : %.4f%%' % (100 * f1_score(y_test, y_pred, average='weighted')))
+    if report:
+        print(classification_report(y_test, y_pred))
+    return 100 * accuracy_score(y_test, y_pred)
 
 
 if __name__ == '__main__':
@@ -140,7 +142,7 @@ if __name__ == '__main__':
                 model.load_state_dict(model_param["model_state_dict"])
                 optimizer.load_state_dict(model_param["optimizer_state_dict"])
                 print("已成功加载模型，正在开始测试...")
-                test_acc = evaluate(model, test_set)
+                test_acc = evaluate(model, test_set, report=True)
                 sys.exit()
             else:
                 exit_or_not = input("文件路径不存在，输入exit结束程序，或按任意键并重新输入模型路径：")
