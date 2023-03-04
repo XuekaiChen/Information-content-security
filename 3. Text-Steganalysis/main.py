@@ -1,130 +1,179 @@
+# -*- coding: utf-8 -*-
+# Date       ：2023/1/28
+# Author     ：Chen Xuekai
+# Description：自构建word2id词典并逐batch做padding测试rnn
+
 import os
 import sys
 import argparse
-import datetime
 import torch
+import numpy as np
 import torch.nn as nn
-from torchtext.vocab import Vectors
-import torchtext.data as data
-
-import FCN
+import BiRNN_CNN
+import random
 import train
-import DataLoader
+from dataloader import *
+from transformers import BertTokenizer
+import warnings
+from operator import itemgetter
 
 
-# 加载参数
-parser = argparse.ArgumentParser(description='FCN')
-parser.add_argument('-batch-size', type=int, default=64, help='batch size for training [default: 64]')
-parser.add_argument('-lr', type=float, default=0.001, help='initial learning rate [default: 0.001]')
-parser.add_argument('-epochs', type=int, default=20, help='number of epochs for train [default: 256]')  # default = 20
-parser.add_argument('-log-interval', type=int, default=20, help='how many steps to wait before logging train status')
-parser.add_argument('-test-interval', type=int, default=100, help='how many steps to wait before testing [default: 100]')
-parser.add_argument('-save-interval', type=int, default=500, help='how many steps to wait before saving [default: 500]')
-parser.add_argument('-early-stop', type=int, default=1000, help='iteration numbers to stop without performance boost')
-parser.add_argument('-save-best', type=bool, default=True, help='whether to save when get best performance')
-parser.add_argument('-save-dir', type=str, default='snapshot', help='where to save the snapshot')
-parser.add_argument('-load-dir', type=str, default=None, help='where to load the trained model')
+# 对每个batch按长度由大到小排序
+def sort_by_lengths(word_lists, tag_lists):
+    pairs = list(zip(word_lists, tag_lists))
+    indices = sorted(range(len(pairs)),
+                     key=lambda k: len(pairs[k][0]),
+                     reverse=True)
+    pairs = [pairs[i] for i in indices]
+    word_lists, tag_lists = list(zip(*pairs))
+    return word_lists, tag_lists
 
-# 加载数据集
-dataset = 'tweets'
-payload = '1bpw'
-dataset_load = '../../Dataset/' + dataset + '/Tina-Fang/5bpw/'
 
-parser.add_argument('-shuffle', action='store_true', default=False, help='shuffle the data every epoch [default: False]')
-parser.add_argument('-train-cover-dir', type=str, default=dataset_load  + 'train_cover.txt', help='the path of train cover data. [default: tweets_cover.txt]')
-parser.add_argument('-train-stego-dir', type=str, default=dataset_load  + 'train_stego.txt', help='the path of train stego data. [default: tweets_stego.txt]')
-parser.add_argument('-test-cover-dir', type=str, default=dataset_load  + 'test_cover.txt', help='the path of test cover data. [default: test_cover.txt]')
-parser.add_argument('-test-stego-dir', type=str, default=dataset_load  + 'test_stego.txt', help='the path of test stego data. [default: test_stego.txt]')
+# 对排序后的句子进行padding，batch内定长输出list
+def pad_sentence(word_lists, target_list):
+    max_seq_len = len(word_lists[0])
+    lengths = [len(sentence) for sentence in word_lists]  # batch每句话的实际长度
+    for sentence in word_lists:
+        padding = [0] * (max_seq_len - len(sentence))
+        sentence += padding
+    return (
+        word_lists,
+        lengths,
+        target_list
+    )
 
-# 模型参数
-parser.add_argument('-num-layers', type=int, default=1, help='the number of LSTM layers [default: 3]')
+
+# 对每个batch做padding
+def regularize_batch(mode_set, idx, B):
+    batch_sents = list(map(itemgetter(0), mode_set[idx:idx + B]))
+    batch_tag = list(map(itemgetter(1), mode_set[idx:idx + B]))
+    # padding
+    input_lists, target_list = sort_by_lengths(batch_sents, batch_tag)
+    input_tensors, lengths, target_tensor = pad_sentence(input_lists, target_list)
+    return input_tensors, lengths, target_tensor
+
+
+# 对所有batch做padding
+def regularize_data(mode_set):  # [sample_num*[[input_list],target]]
+    mode_inputs = []
+    mode_lengths = []
+    mode_targets = []
+    for idx in range(0, len(mode_set), args.batch_size):
+        input_list, length, target_list = regularize_batch(mode_set, idx, args.batch_size)
+        list(map(lambda x: mode_inputs.append(x), input_list))
+        list(map(lambda x: mode_lengths.append(x), length))
+        list(map(lambda x: mode_targets.append(x), target_list))
+    return (
+        mode_inputs,
+        mode_lengths,
+        mode_targets
+    )  # batch内定长，总数据不定长
+
+
+warnings.filterwarnings("ignore")
+parser = argparse.ArgumentParser(description='R_BiLTM_C')
+
+# learning
+parser.add_argument('-batch-size', type=int, default=32, help='batch size for training [default: 64]')
+parser.add_argument('-lr', type=float, default=0.001, help='initial learning rate [default:0.001]')
+parser.add_argument('-epochs', type=int, default=50, help='number of epochs for train [default:20]')
+parser.add_argument('-log-interval', type=int, default=20, help='how many steps to wait defore logging train status')
+parser.add_argument('-early-stop', type=int, default=10, help='iteration numbers to stop without performace boost')
+parser.add_argument('-save-dir', type=str, default='hc1', help='where to save the snapshot')
+
+# model
+parser.add_argument('-num_layers', type=int, default=2, help='the number of LSTM layers [default:2]')
+parser.add_argument('-embed_dim', type=int, default=300, help='number of embedding dimension [defualt:256]')
+parser.add_argument('-hidden_size', type=int, default=128, help='the number of hidden unit [defualt:100]')
+parser.add_argument('-class_num', type=int, default=2, help='the number of class unit [defualt:2]')
 parser.add_argument('-kernel-sizes', type=str, default=[3, 5, 7], help='the sizes of kernels of CNN layers')
-parser.add_argument('-kernel-num', type=int, default=128, help='the number of each CNN kernels [default: 100]')
-parser.add_argument('-embed-dim', type=int, default=100, help='number of embedding dimension [default: 128]')  # 和glove的维度对应
-parser.add_argument('-hidden-size', type=int, default=100, help='the number of hidden unit [default: 300]')  # 300
-parser.add_argument('-dropout', type=float, default=0.2, help='the probability for LSTM dropout [default: 0.5]')
-parser.add_argument('-CNN_dropout', type=float, default=0.5, help='the probability for CNN dropout [default: 0.5]')
-parser.add_argument('-no-cuda', action='store_true', default=False, help='disable the gpu [default: False]')
-parser.add_argument('-device', type=str, default='cuda', help='device to use for training [default: cuda]')
-parser.add_argument('-idx-gpu', type=str, default='0', help='the number of gpu for training [default: 0]')
-parser.add_argument('-test', type=bool, default=True, help='train or test [default: False]')
+parser.add_argument('-kernel-num', type=int, default=128, help='the number of each CNN kernels [default:100]')
+parser.add_argument('-LSTM_dropout', type=float, default=0.5, help='the probability for LSTM dropout [defualt:0.5]')
+parser.add_argument('-CNN_dropout', type=float, default=0.5, help='the probability for CNN dropout [defualt:0.5]')
+
+# data
+parser.add_argument('--dataset', type=str, default='../../data/hc1_cover-stego.xlsx', help='the path of data folder')
+
+# device
+parser.add_argument('--device', type=str, default='cuda', help='device to use for trianing [default:cuda]')
+parser.add_argument('--idx-gpu', type=str, default='1', help='the number of gpu for training [default:2]')  # TODO
+
+# option
+parser.add_argument('-test', type=bool, default=False, help='train or test [default:False]')
+
 args = parser.parse_args()
 os.environ['CUDA_VISIBLE_DEVICES'] = args.idx_gpu
-parser.add_argument('n_dim', type=int, default=10, help='n-dimensional seq_len feature [default: 10]')
 
+# set seed
+seed = 123
+random.seed(seed)
+os.environ['PYTHONHASHSEED'] = str(seed)
+np.random.seed(seed)
+torch.manual_seed(seed)
+torch.cuda.manual_seed(seed)
 
-# data_loader
-def data_loader(text_field, label_field, args,  **kwargs):
-	train_data, valid_data = DataLoader.MyData.split(text_field, label_field, args, 'train')
-	text_field.build_vocab(train_data, valid_data)
-	label_field.build_vocab(train_data, valid_data)
-	train_iter, valid_iter = data.Iterator.splits((train_data, valid_data), batch_sizes=(args.batch_size, len(valid_data)), **kwargs)
-	return train_iter, valid_iter
-
-
+# load data
+print('\nLoading data...')
 # 加载数据
-print('\n Loading data...')
-text_field = data.Field(lower=True)
-label_field = data.Field(sequential=False)
-train_iter, valid_iter = data_loader(text_field, label_field, args, device=args.device, sort=False)
+data_id_list, word2id = build_dataset(args)
+args.embed_num = len(word2id)
+# train:valid:test = 8:1:1
+unnorm_train_set = data_id_list[:int(len(data_id_list) * 0.8)]
+unnorm_valid_set = data_id_list[int(len(data_id_list) * 0.8):int(len(data_id_list) * 0.9)]
+unnorm_test_set = data_id_list[int(len(data_id_list) * 0.9):]
+print("sample number: ")
+print("train: {}\tvalid: {}\ttest: {}".format(len(unnorm_train_set), len(unnorm_valid_set), len(unnorm_test_set)))
+train_set = regularize_data(unnorm_train_set)  # (sam_num*[input_list],sam_num*[length],sam_num*[target])
+valid_set = regularize_data(unnorm_valid_set)
+test_set = regularize_data(unnorm_test_set)
+print('\nfinish Loading data !')
 
-# 更新参数
-args.embed_num = len(text_field.vocab)
-args.class_num = len(label_field.vocab) - 1
-args.cuda = (not args.no_cuda) and torch.cuda.is_available(); del args.no_cuda
 
+# model
+model = BiRNN_CNN.R_BI_C(args)
 
-# 模型初始化
-model = FCN.FCN(args)
-
+# initializing model
 for name, w in model.named_parameters():
-	if 'embed' not in name:
-		if 'fc1.weight' in name:
-			nn.init.xavier_normal_(w)
-		elif 'weight' in name and 'conv' in name:
-			nn.init.normal_(w, 0.0, 0.1)
-		if 'bias' in name:
-			nn.init.constant_(w, 0)
+    if 'embed' not in name:
+        if 'fc1.weight' in name:
+            nn.init.xavier_normal_(w)
 
-if args.load_dir is not None:
-	print('\nLoading model from {}...'.format(args.load_dir))
-	model.load_state_dict(torch.load(args.load_dir))
-
-if args.cuda:
-	torch.device(args.device)
-	model.cuda()
+        elif 'bias' in name:
+            nn.init.constant_(w, 0)
 
 
+# Caculate the number of parameters of the loaded model
 total_params = sum(p.numel() for p in model.parameters())
 print('Model_size: ', total_params)
 
+if torch.cuda.is_available():
+    torch.device(args.device)
+    model = model.cuda()
 
-# train
-if not args.test:
-	import time
-	start = time.time()
-	train.train(train_iter, valid_iter, model, args)
-	end = time.time()
-	print('time: ', end - start)
+# Training
+args.test = False
+print('-----------training-----------')
+train.train(train_set, valid_set, model, args, len(valid_set[0]))
 
+# Testing
+args.test = True
+print('\n-----------testing-----------')
+print('Loading test model from {}...'.format(args.save_dir))
+models = []
+files = sorted(os.listdir(args.save_dir))
+for name in files:
+    if name.endswith('.pt'):
+        models.append(name)
+model_steps = sorted([int(m.split('_')[-1].split('.')[0]) for m in models])
+ACC, R, P, F1 = 0, 0, 0, 0
+for step in model_steps[-5:]:
+    best_model = 'best_epochs_{}.pt'.format(step)
+    m_path = os.path.join(args.save_dir, best_model)
+    print('the {} model is loaded...'.format(m_path))
+    model.load_state_dict(torch.load(m_path))
+    acc, r, p, f = train.data_eval(test_set, model, args, len(test_set[0]))
+    ACC += acc
+    R += r
+    P += p
+    F1 += f
 
-# test
-if args.test:
-	del train_iter, valid_iter
-	test_data = DataLoader.MyData.split(text_field, label_field, args, 'test')
-	test_iter = data.Iterator.splits([test_data], batch_sizes=[len(test_data)], device=args.device, sort=False)[0]
-	print('\n----------testing------------')
-	print('Loading test model from {}...'.format(args.save_dir))
-	models = []
-	files = sorted(os.listdir(args.save_dir))
-	for name in files:
-		if name.endswith('.pt'):
-			models.append(name)
-	model_steps = sorted([int(m.split('_')[-1].split('.')[0]) for m in models])
-
-	for step in model_steps[-3:]:
-		best_model = 'best_steps_{}.pt'.format(step)
-		m_path = os.path.join(args.save_dir, best_model)
-		print('the {} model is loaded...'.format(m_path))
-		model.load_state_dict(torch.load(m_path))
-		train.data_eval(test_iter, model, args)
